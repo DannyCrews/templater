@@ -1,0 +1,118 @@
+#!/usr/bin/env ruby
+require 'json'
+
+# initializations
+template = ""
+template_line_pointer = 0
+data = ""
+json_stack = [] #json_stack keeps current working hash/array on top
+loop_stack = [] #pointer to loop start line
+array_index = [] # increments as data array is traversed
+line = ""
+output_line = ""
+
+# Constants
+TAG = Regexp.new(/<\*[^\*]*\*>/)
+START_EACH = Regexp.new(/<\* EACH|<\*EACH/)
+END_EACH = Regexp.new(/<\* ENDEACH|<\*ENDEACH/)
+EACH_CONTENT = Regexp.new(/EACH[^\*]*/)
+TAG_OPEN = "<*"
+
+def read_template(file_name)
+  File.open(file_name, "r") do |f|
+    f.readlines
+  end
+end
+
+def read_json(file_name)
+  File.open(file_name, "r") do |f|
+    f.read
+  end
+end
+
+def get_tokens(line, regex)
+  line.scan(regex).to_s.split(/[\s]/)[1].split(".")
+end
+
+puts "Incorrect number of arguments" if ARGV.length < 2
+
+ARGV.each do |file_name|
+  if File.extname(file_name) == ".panoramatemplate"
+    template = read_template(file_name)
+  elsif File.extname(file_name) == ".json"
+    data = read_json(file_name)
+    json_stack << JSON.parse(data)
+  else
+    puts "A file extension was incorrect, valid extensions are '.panoramatemplate' and '.json'"
+  end
+end
+
+output = File.open("./output.html", "w")
+############### For each line in the input template ###########
+while template_line_pointer < template.length
+  line = template[template_line_pointer]
+  case
+    ############## Find the loop starts ########################
+  when line =~ START_EACH
+    # Get text between delimiters and tokenize it
+    tokens = get_tokens(line, EACH_CONTENT)# grab value after EACH, which is a json key
+    working_data = nil
+
+    if json_stack.last.is_a? Array
+      tokens = tokens.last
+      working_data = json_stack.last[array_index.last][tokens] #get data from hash inside array
+    else #item on top of json_stack is a hash or string
+      working_data = json_stack.last
+      # put return from hash into working data
+      if tokens.is_a? Array
+        tokens.each { |token| working_data = working_data[token] }
+      else #tokens is a string
+        working_data = working_data[tokens]
+      end
+    end
+
+    array_index << 0 # first element of json data array being traversed
+    json_stack << working_data # put json query result on top of stack
+    loop_stack << template_line_pointer + 1 # append loop start line to array. Subsequent elements correspond to innermost loop starts
+
+    output_line = ""
+
+    ################# Find loop ends ##############################
+  when line =~ END_EACH
+    # when done iterating through array on json_stack, pop corresponding elements off of top of stacks
+    if array_index.last == json_stack.last.length - 1
+      json_stack.pop
+      array_index.pop
+      loop_stack.pop
+    else
+      # increment value in array_index and reset template_line_pointer until end of array
+      array_index[array_index.size - 1] = array_index.last + 1
+      template_line_pointer = loop_stack.last - 1
+    end
+    output_line = ""
+
+  ################## Find tag in template line ###########
+  when line.include?(TAG_OPEN)
+    tokens = get_tokens(line, TAG)
+
+    if json_stack.last.is_a? Array
+      working_data = json_stack.last[array_index.last] # get value for array index on top of stack
+      if working_data.is_a? Hash
+        tokens.shift
+        tokens.each { |token| working_data = working_data[token] }
+      end
+    else #last element in json_stack is a hash
+      working_data = json_stack.last
+      tokens.each { |token| working_data = working_data[token] } #iterate through hash with tokens values as keys and return the value to working_data
+    end
+    output_line = working_data
+    ############### Pass line unchanged #####################
+  else
+    output_line = line
+  end
+
+  template_line_pointer += 1
+  output.puts line.gsub(TAG, output_line)
+end
+
+output.close
